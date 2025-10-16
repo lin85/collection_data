@@ -1,0 +1,365 @@
+import threading
+import time
+import queue
+from datetime import datetime
+import random
+from config.configDB import *
+import redque
+import json
+import hashlib
+import requests
+import re
+
+
+def strGetlen(strn, strx, strend):
+    """
+    截取字符串
+    :param strn:
+    :param strx:
+    :param strend:
+    :return:
+    """
+    sint = strn.find(strx)
+    strn = strn[sint + len(strx):]
+    if strend == "":
+        return strn
+    eint = strn.find(strend)
+    return strn[:eint]
+
+
+def get_current_time():
+    return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
+
+
+def get_sign(token, t, em_data, s='12574478'):
+    string = token + "&" + str(t) + "&" + s + "&" + json.dumps(em_data)
+    sign = hashlib.md5(string.encode('utf-8')).hexdigest()
+    return sign
+
+
+def remove_html_tags(text):
+    """使用正则表达式移除 HTML 标签"""
+    clean = re.compile('<.*?>')
+    return re.sub(clean, '', text)
+
+
+class OnDemandTaskQueue:
+    def __init__(self, max_workers=3):
+        self.task_queue = queue.Queue()
+        self.max_workers = max_workers
+        self.is_running = True
+        self.executor = None
+        self.worker_threads = []
+
+        # 启动工作线程
+        self._start_workers()
+
+    def add_task(self, task, *args, **kwargs):
+        """添加任务到队列，触发执行
+
+        Args:
+            task: 任务函数或任务描述
+            *args: 任务函数的参数
+            **kwargs: 任务函数的关键字参数
+        """
+        # 包装任务和参数
+        task_data = {
+            'func': task,
+            'args': args,
+            'kwargs': kwargs,
+            'name': kwargs.pop('task_name', None) or f"任务-{get_current_time()}"
+        }
+
+        self.task_queue.put(task_data)
+        print(f"[{get_current_time()}] 任务已添加到队列: {task_data['name']}")
+        print(f"当前队列大小: {self.task_queue.qsize()}")
+
+    def worker(self, worker_id):
+        """工作线程函数"""
+        print(f"工作线程 {worker_id} 已启动")
+        while self.is_running:
+            try:
+                # 从队列中获取任务，如果没有任务则阻塞等待
+                task_data = self.task_queue.get()
+
+                # 如果收到停止信号，退出循环
+                if task_data is None:
+                    break
+
+                try:
+                    # 执行任务
+                    task_name = task_data['name']
+                    print(f"[{get_current_time()}] 线程{worker_id} 开始执行: {task_name}")
+
+                    # 执行任务逻辑
+                    if callable(task_data['func']):
+                        # 调用带参数的任务函数
+                        result = task_data['func'](*task_data['args'], **task_data['kwargs'])
+                        print(f"[{get_current_time()}] 线程{worker_id} 任务完成，返回值: {result}")
+                    else:
+                        # 处理非函数任务
+                        self.process_task(task_data['func'], worker_id)
+                        print(f"[{get_current_time()}] 线程{worker_id} 任务完成: {task_name}")
+
+                except Exception as e:
+                    print(f"[{get_current_time()}] 线程{worker_id} 任务执行失败: {e}")
+                finally:
+                    # 标记任务完成
+                    self.task_queue.task_done()
+
+            except Exception as e:
+                print(f"工作线程 {worker_id} 发生错误: {e}")
+
+        print(f"工作线程 {worker_id} 已停止")
+
+    def process_task(self, task, worker_id):
+        """处理非函数任务的函数"""
+        # 这里是你的任务处理逻辑
+        print(f"线程{worker_id} 处理任务: {task}")
+        # 模拟任务执行时间（随机1-10秒）
+        execution_time = random.randint(1, 10)
+        time.sleep(execution_time)
+        print(f"线程{worker_id} 完成任务: {task} (耗时: {execution_time}秒)")
+
+    def _start_workers(self):
+        """启动工作线程"""
+        for i in range(self.max_workers):
+            thread = threading.Thread(target=self.worker, args=(i + 1,))
+            thread.daemon = True
+            thread.start()
+            self.worker_threads.append(thread)
+
+        print(f"按需任务队列已启动，最大线程数: {self.max_workers}")
+        print("等待任务添加...")
+
+    def wait_all_tasks(self):
+        """等待所有任务完成"""
+        self.task_queue.join()
+        print("所有任务已完成")
+
+    def stop(self):
+        """停止任务队列"""
+        self.is_running = False
+
+        # 向每个工作线程发送停止信号
+        for _ in range(self.max_workers):
+            self.task_queue.put(None)
+
+        # 等待所有工作线程结束
+        for thread in self.worker_threads:
+            thread.join(timeout=5)
+
+        print("按需任务队列已停止")
+
+
+def get_content(search, page, sourceS, totalResults, p4pIds, tb_cookies):
+    n_params = {"device": "HMA-AL00", "isBeta": "false", "grayHair": "false", "from": "nt_history", "brand": "HUAWEI",
+                "info": "wifi", "index": "4", "rainbow": "", "schemaType": "auction", "elderHome": "false",
+                "isEnterSrpSearch": "true", "newSearch": "false", "network": "wifi", "subtype": "",
+                "hasPreposeFilter": "false", "prepositionVersion": "v2", "client_os": "Android", "gpsEnabled": "false",
+                "searchDoorFrom": "srp", "debug_rerankNewOpenCard": "false", "homePageVersion": "v7",
+                "searchElderHomeOpen": "false", "search_action": "initiative", "sugg": "_4_1", "sversion": "13.6",
+                "style": "list", "ttid": "600000@taobao_pc_10.7.0", "needTabs": "true", "areaCode": "CN", "vm": "nw",
+                "countryNum": "156", "m": "pc_sem", "page": page, "n": 48, "q": search, "qSource": "manual",
+                "pageSource": "tbpc.pc_sem_alimama/a.201867-main.d2_fourth.1d632a89T3BUh3", "tab": "all",
+                "pageSize": "48", "totalPage": "100", "totalResults": totalResults, "sourceS": sourceS,
+                "sort": "_coefp",
+                "filterTag": "", "service": "", "prop": "", "loc": "", "start_price": None, "end_price": None,
+                "startPrice": None, "endPrice": None,
+                "p4pIds": p4pIds,
+                "categoryp": "", "myCNA": "",
+                # "clk1": "cde39d6035717cbb650923de57a157bd",
+                # "refpid": "mm_26632258_3504122_32538762"
+                }
+    data = {
+        "appId": "43356",
+        "params": json.dumps(n_params)
+    }
+    token = tb_cookies["_m_h5_tk"].split("_")[0]
+    u = int(time.time() * 1000)
+    sign = get_sign(token, u, data)
+    params = {
+        "jsv": "2.7.2",
+        "appKey": "12574478",
+        "t": u,
+        "sign": sign,
+        "api": "mtop.relationrecommend.wirelessrecommend.recommend",
+        "v": "2.0",
+        "type": "jsonp",
+        "dataType": "jsonp",
+        "callback": "mtopjsonp36",
+        "data": json.dumps(data),
+    }
+    try:
+        headers = {
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Connection": "keep-alive",
+            "Referer": "https://uland.taobao.com/",
+            "Sec-Fetch-Dest": "script",
+            "Sec-Fetch-Mode": "no-cors",
+            "Sec-Fetch-Site": "same-site",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+            "sec-ch-ua": "\"Google Chrome\";v=\"141\", \"Not?A_Brand\";v=\"8\", \"Chromium\";v=\"141\"",
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": "\"Windows\""
+        }
+
+        url = 'https://h5api.m.taobao.com/h5/mtop.relationrecommend.wirelessrecommend.recommend/2.0'
+        res = requests.get(url=url, params=params, headers=headers, cookies=tb_cookies, verify=False)
+        res_text = strGetlen(res.text, '{', '})')
+        res_json = json.loads("{" + res_text + "}")
+        return res_json
+    except Exception as e:
+        print(1)
+        return {}
+
+
+coon = MyPymysqlPool("configuration")
+commodity_queue = redque.RedisQueue("que", host='192.168.0.195', port=6179, db=0)
+
+
+def get_token():
+    t = int(time.time()) * 1000
+    sign = get_sign('undefined', t, {})
+    url = 'https://h5api.m.taobao.com/h5/mtop.relationrecommend.wirelessrecommend.recommend/2.0'
+    headers = {}
+    params = {
+        "jsv": "2.7.2",
+        "appKey": "12574478",
+        "t": t,
+        "sign": sign,
+        "api": "mtop.relationrecommend.wirelessrecommend.recommend",
+        "v": "2.0",
+        "type": "jsonp",
+        "dataType": "jsonp",
+        "callback": "mtopjsonp36",
+        "data": json.dumps({}),
+    }
+    response = requests.get(url, headers=headers, params=params, verify=False)
+    cookie_text = response.headers['Set-Cookie']
+    _m_h5_tk = re.findall("_m_h5_tk=(.*?);", cookie_text)[0]
+    _m_h5_tk_enc = re.findall('_m_h5_tk_enc=(.*?);', cookie_text)[0]
+
+    return _m_h5_tk, _m_h5_tk_enc, t
+
+
+def get_commodity(task_id, search):
+    try:
+        count = 0
+        tb_cookies = {}
+        _m_h5_tk, _m_h5_tk_enc, t = get_token()
+        tb_cookies.update({"_m_h5_tk": _m_h5_tk})
+        tb_cookies.update({"_m_h5_tk_enc": _m_h5_tk_enc})
+        sourceS = "0"
+        totalResults = '5000'
+        p4pIds = "824588831091,673204053243,921481386535,916638671275,949800074806,717029521944,668471446102,827277993715,693119124200,656932211575,965045325968,44864183738,928432382463,897343527811,963586927527,968464740506,666541484543,909004999386,949860091675,948987769645,886941883579,956313145295,938770691780,936903491700,961362969597,825531585738,845387317143,712337081612,650954266819,913967042763,909881409825,643345679705,752355397625,846445168521,851933871893,952603038374,921379477051,917699242678,814881008711,632337966231,825437605251,901598280201,765452193916,796828045674,744677339956,782818959631,674296607363,573155593472"
+        data_dict = {}
+        for i in range(1, 100):
+            res_json = get_content(search, i, sourceS, totalResults, p4pIds, tb_cookies)
+            search_data = res_json.get("data")
+            p4pIds = search_data.get("p4pIds")
+            if p4pIds == None:
+                print(f"[{get_current_time()}] 关键词:{search}---当前采集第{i}/100页 没有更多数据了")
+                break
+            mainInfo = search_data['mainInfo']
+            sourceS = mainInfo['sourceS']
+            totalResults = mainInfo['totalResults']
+            for itme in search_data['itemsArray']:
+                tb_shopname = itme['shopInfo']['title']  # 商品 品牌
+                tb_id = itme['item_id']  # 商品id
+                title = itme['title']  # 标题
+                price = float(itme['price'])  # 价格
+                # procity = itme['procity']  # 地区
+                tb_cover = itme['pic_path']  # 图片地址
+                # auctionURL = itme['auctionURL']  # 商品详情地址
+                # shopTag = itme.get("shopTag")  # 商品复购率
+                check_time = get_current_time()
+                tb_url = f'https://item.taobao.com/item.htm?abbucket=6&id={tb_id}'
+                dict_info = {
+                    tb_id: {"tb_title": title, "tb_price": price, "tb_url": tb_url,
+                            "check_time": check_time,
+                            'tb_shopname': tb_shopname, 'tb_cover': tb_cover, 'tb_id': tb_id}}
+                data_dict.update(dict_info)
+            print(f"[{get_current_time()}] 关键词:{search}---当前采集第{i}/100页,共：{len(data_dict)}")
+        sql = 'insert into t_tb (tb_id,keywork,tb_title,tb_price,tb_url,check_time,created_time,tb_shopname,take_time,tb_cover,task_id) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)'
+        if commodity_queue.lock(timeout=30):
+            for elem_id in data_dict:
+                elem_data = data_dict[elem_id]
+                tb_title = remove_html_tags(elem_data['tb_title'])
+                tb_price = elem_data['tb_price']
+                check_time = elem_data['check_time']
+                tb_shopname = elem_data['tb_shopname']
+                tb_url = elem_data['tb_url']
+                tb_cover = elem_data['tb_cover']
+                data = (elem_id, search, tb_title, tb_price, tb_url, check_time, check_time, tb_shopname,
+                        check_time, tb_cover, task_id)
+                try:
+                    coon.insert(sql, data)
+                    commodity_queue.put(elem_data)
+                    count += 1
+                except Exception as e:
+                    print(f"[{get_current_time()}] 关键词:{search}--错误：--{e}")
+            current_time = datetime.datetime.now()
+            # 修改执行中状态
+            sql = 'update t_task set status=2,end_time=%s where id=%s'
+            data = (current_time, task_id)
+            coon.update(sql, data)
+            commodity_queue.unlock()  # put结束后删除锁
+        return f"任务id-{task_id},关键词{search},成功添加任务:{count}条"
+    except Exception as e:
+        print(f"[{get_current_time()}] 关键词:{search}--错误：--{e}")
+
+
+def upadat_status():
+    select_sql = "select id,keyword from t_task where status=2"
+    taks_list = coon.select(select_sql)
+    for taks in taks_list:
+        task_id = taks['id']
+        keyword = taks['keyword']
+        tb_sql = "select count(1) as taks_count from t_tb where check_status=0 and task_id=%s" % task_id
+        result = coon.select(tb_sql)
+        taks_count = result[0]['taks_count']
+        if taks_count == 0:
+            # 修改执行中状态
+            up_sql = 'update t_task set status=1,end_time=%s where id=%s'
+            data = (get_current_time(), task_id)
+            coon.update(up_sql, data)
+            print(f"[{get_current_time()}] {keyword} 执行完毕")
+        else:
+            print(f"[{get_current_time()}] {keyword} 执行中 还有{taks_count}条数据未执行")
+            if commodity_queue.lock(timeout=30):
+                if commodity_queue.qsize() == 0:
+                    sql = "select tb_id,tb_cover,tb_price,tb_title from t_tb where check_status=0 and task_id=%s" % task_id
+                    data_list = coon.select(sql)
+                    # 任务列表中没有数据 将未执行的数据添加到任务列表
+                    print(f"[{get_current_time()}] {keyword} 添加{len(data_list)}条数据")
+                    for data in data_list:
+                        commodity_queue.put(data)
+                commodity_queue.unlock()  # put结束后删除锁
+
+    return '任务状态更新成功'
+
+
+if __name__ == "__main__":
+    # 创建按需任务队列，最大max_workers个线程
+    task_queue = OnDemandTaskQueue(max_workers=5)
+    try:
+        while True:
+            task_queue.add_task(upadat_status())
+            sql = "select id,keyword from t_task where status=0"
+            taks_list = coon.select(sql)
+            for taks in taks_list:
+                task_id = taks['id']
+                search = taks['keyword']
+                task_queue.add_task(get_commodity, task_id, search, task_name=f"{search}")
+            # 等待所有任务完成
+            # task_queue.wait_all_tasks()
+            print(f"[{get_current_time()}] 任务等待")
+            for i in range(3):
+                time.sleep(60)
+    except KeyboardInterrupt:
+        print("\n收到停止信号...")
+    finally:
+        print("正在关闭任务队列...")
+        task_queue.stop()
